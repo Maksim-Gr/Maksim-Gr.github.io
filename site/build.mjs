@@ -9,7 +9,7 @@ import hljs from 'highlight.js';
 
 const SITE = {
   title: 'Maksim Grishchenko',
-  description: 'Notes on data engineering and databases, tested on real systems.',
+  description: 'Data engineering, databases and software: notes from my day-to-day work.',
   url: 'https://maksim-gr.github.io',
   repo: 'https://github.com/Maksim-Gr/Maksim-Gr.github.io',
   github: 'https://github.com/Maksim-Gr',
