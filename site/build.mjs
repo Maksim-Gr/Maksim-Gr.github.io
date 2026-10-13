@@ -108,11 +108,8 @@ function renderMarkdown(md) {
     .replace(/<\/table>/g, '</table></div>');
 }
 
-function layout({ title, description, url, body, type = 'website', editPath, jsonLd }) {
+function layout({ title, description, url, body, type = 'website', jsonLd }) {
   const pageTitle = url === '/' ? SITE.title : `${title} · ${SITE.title}`;
-  const edit = editPath
-    ? `<a href="${SITE.repo}/edit/main/${editPath}">Fix a typo</a>`
-    : '';
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -142,7 +139,7 @@ ${body}
 </main>
 <footer class="site">
   <p class="asterism" aria-hidden="true">* * *</p>
-  <p class="links">${edit}<a href="mailto:${SITE.email}">Email</a><a href="https://t.me/${SITE.telegram}">Telegram</a><a href="${SITE.github}">GitHub</a></p>
+  <p class="links"><a href="mailto:${SITE.email}">Email</a><a href="https://t.me/${SITE.telegram}">Telegram</a><a href="${SITE.github}">GitHub</a></p>
 </footer>
 </body>
 </html>
@@ -295,7 +292,6 @@ ${seriesNext(p)}
     url: p.url,
     body,
     type: 'article',
-    editPath: `posts/${p.dir}/post.md`,
     jsonLd: {
       '@context': 'https://schema.org',
       '@type': 'BlogPosting',
