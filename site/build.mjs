@@ -126,15 +126,11 @@ function layout({ title, description, url, body, type = 'website', editPath, jso
 <meta property="og:type" content="${type}">
 <meta name="twitter:card" content="summary">
 <link rel="stylesheet" href="/style.css">
-<script>
-try { const t = localStorage.getItem('theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
-window.siteTheme = () => document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-</script>
 ${jsonLd ? `<script type="application/ld+json">${JSON.stringify(jsonLd).replace(/</g, '\\u003c')}</script>\n` : ''}</head>
 <body>
 <header class="site">
   <a class="name" href="/">${escapeHtml(SITE.title)}</a>
-  <nav><a href="/">Posts</a><a href="/topics/">Topics</a><button class="theme-toggle" type="button" aria-label="Switch light or dark mode">Dark mode</button></nav>
+  <nav><a href="/">Posts</a><a href="/topics/">Topics</a></nav>
 </header>
 <main>
 ${body}
@@ -143,20 +139,6 @@ ${body}
   <p class="asterism" aria-hidden="true">* * *</p>
   <p class="links">${edit}<a href="${SITE.github}">GitHub</a></p>
 </footer>
-<script>
-(() => {
-  const root = document.documentElement;
-  const button = document.querySelector('.theme-toggle');
-  const current = window.siteTheme;
-  const label = () => { button.textContent = current() === 'dark' ? 'Light mode' : 'Dark mode'; };
-  button.addEventListener('click', () => {
-    root.dataset.theme = current() === 'dark' ? 'light' : 'dark';
-    try { localStorage.setItem('theme', root.dataset.theme); } catch (e) {}
-    label();
-  });
-  label();
-})();
-</script>
 </body>
 </html>
 `;

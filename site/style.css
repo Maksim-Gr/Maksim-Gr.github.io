@@ -1,4 +1,4 @@
-/* "Paper" palette: warm off-white, rust links. One reading column, system fonts only (no external requests), light and dark themes from the OS setting. */
+/* "Paper" palette: warm off-white, rust links. One reading column, system fonts only (no external requests), light theme only. */
 :root {
   --bg: #FBF9F4;
   --ink: #1F1D1A;
@@ -18,47 +18,8 @@
   --f-text: Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
   --f-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --f-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-  color-scheme: light dark;
+  color-scheme: light;
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #1B1917;
-    --ink: #E9E4DA;
-    --muted: #A59E92;
-    --rule: #35312C;
-    --link: #F0956A;
-    --code-bg: #24211E;
-    --code-ink: #E2DDD3;
-    --c-kw: #F0956A;
-    --c-str: #AAD08C;
-    --c-num: #CBA8EC;
-    --c-com: #8F887D;
-    --c-fn: #86BEEB;
-    --tag-bg: #2B2824;
-    --draft: #E6A954;
-    --sel: #5A3A2A;
-    color-scheme: dark;
-  }
-}
-:root[data-theme="dark"] {
-  --bg: #1B1917;
-  --ink: #E9E4DA;
-  --muted: #A59E92;
-  --rule: #35312C;
-  --link: #F0956A;
-  --code-bg: #24211E;
-  --code-ink: #E2DDD3;
-  --c-kw: #F0956A;
-  --c-str: #AAD08C;
-  --c-num: #CBA8EC;
-  --c-com: #8F887D;
-  --c-fn: #86BEEB;
-  --tag-bg: #2B2824;
-  --draft: #E6A954;
-  --sel: #5A3A2A;
-  color-scheme: dark;
-}
-:root[data-theme="light"] { color-scheme: light; }
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -85,10 +46,7 @@ header.site {
 header.site .name { font-weight: 700; color: var(--ink); text-decoration: none; font-size: 1.35rem; letter-spacing: -0.01em; }
 header.site nav { display: flex; flex-wrap: wrap; gap: 1rem; align-items: baseline; font-size: 0.9rem; }
 header.site nav a, footer.site a { color: var(--muted); text-decoration: none; }
-header.site nav a:hover, footer.site a:hover, .theme-toggle:hover { color: var(--link); }
-.theme-toggle {
-  font: inherit; color: var(--muted); background: none; border: 0; padding: 0; cursor: pointer;
-}
+header.site nav a:hover, footer.site a:hover { color: var(--link); }
 footer.site { margin-top: 4rem; font-family: var(--f-ui); font-size: 0.9rem; text-align: center; }
 footer.site .asterism { color: var(--muted); letter-spacing: 0.5em; margin: 0 0 1rem; }
 footer.site .links { display: flex; flex-wrap: wrap; gap: 1.25rem; justify-content: center; margin: 0; }
