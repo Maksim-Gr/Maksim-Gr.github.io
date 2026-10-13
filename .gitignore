@@ -1,0 +1,10 @@
+# Private notes, not part of the public site repo
+topics/
+ideas.md
+STYLE.md
+
+# Build output and dependencies
+site/_site/
+site/_preview/
+site/node_modules/
+.DS_Store
