@@ -125,6 +125,9 @@ function layout({ title, description, url, body, type = 'website', editPath, jso
 <meta property="og:url" content="${SITE.url}${url}">
 <meta property="og:type" content="${type}">
 <meta name="twitter:card" content="summary">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/style.css">
 ${jsonLd ? `<script type="application/ld+json">${JSON.stringify(jsonLd).replace(/</g, '\\u003c')}</script>\n` : ''}</head>
 <body>
@@ -264,6 +267,8 @@ function seriesNext(p) {
 fs.rmSync(outDir, { recursive: true, force: true });
 fs.mkdirSync(outDir, { recursive: true });
 fs.copyFileSync(path.join(siteDir, 'style.css'), path.join(outDir, 'style.css'));
+// Files served from the site root as they are (icons).
+fs.cpSync(path.join(siteDir, 'static'), outDir, { recursive: true });
 writeFile('.nojekyll', '');
 
 for (const p of posts) {
