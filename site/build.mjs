@@ -13,6 +13,8 @@ const SITE = {
   url: 'https://maksim-gr.github.io',
   repo: 'https://github.com/Maksim-Gr/Maksim-Gr.github.io',
   github: 'https://github.com/Maksim-Gr',
+  email: 'maksim.g.grishchenko@gmail.com',
+  telegram: 'MaxXGr',
 };
 
 const siteDir = path.dirname(fileURLToPath(import.meta.url));
@@ -140,7 +142,7 @@ ${body}
 </main>
 <footer class="site">
   <p class="asterism" aria-hidden="true">* * *</p>
-  <p class="links">${edit}<a href="${SITE.github}">GitHub</a></p>
+  <p class="links">${edit}<a href="mailto:${SITE.email}">Email</a><a href="https://t.me/${SITE.telegram}">Telegram</a><a href="${SITE.github}">GitHub</a></p>
 </footer>
 </body>
 </html>
