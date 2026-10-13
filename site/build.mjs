@@ -125,7 +125,6 @@ function layout({ title, description, url, body, type = 'website', editPath, jso
 <meta property="og:url" content="${SITE.url}${url}">
 <meta property="og:type" content="${type}">
 <meta name="twitter:card" content="summary">
-<link rel="alternate" type="application/rss+xml" title="${escapeHtml(SITE.title)}" href="/feed.xml">
 <link rel="stylesheet" href="/style.css">
 <script>
 try { const t = localStorage.getItem('theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
@@ -135,14 +134,14 @@ ${jsonLd ? `<script type="application/ld+json">${JSON.stringify(jsonLd).replace(
 <body>
 <header class="site">
   <a class="name" href="/">${escapeHtml(SITE.title)}</a>
-  <nav><a href="/">Posts</a><a href="/topics/">Topics</a><a href="/feed.xml">RSS</a><button class="theme-toggle" type="button" aria-label="Switch light or dark mode">Dark mode</button></nav>
+  <nav><a href="/">Posts</a><a href="/topics/">Topics</a><button class="theme-toggle" type="button" aria-label="Switch light or dark mode">Dark mode</button></nav>
 </header>
 <main>
 ${body}
 </main>
 <footer class="site">
   <p class="asterism" aria-hidden="true">* * *</p>
-  <p class="links">${edit}<a href="/feed.xml">RSS</a><a href="${SITE.github}">GitHub</a></p>
+  <p class="links">${edit}<a href="${SITE.github}">GitHub</a></p>
 </footer>
 <script>
 (() => {
@@ -353,23 +352,5 @@ for (const t of tags) {
     body: `<h1>${escapeHtml(t)}</h1>\n${postList(posts.filter((p) => p.tags.includes(t)))}`,
   }));
 }
-
-const cdata = (s) => `<![CDATA[${s.replace(/]]>/g, ']]]]><![CDATA[>')}]]>`;
-writeFile('feed.xml', `<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0">
-<channel>
-<title>${escapeHtml(SITE.title)}</title>
-<link>${SITE.url}/</link>
-<description>${escapeHtml(SITE.description)}</description>
-${posts.filter((p) => !p.draft).map((p) => `<item>
-  <title>${escapeHtml(p.title)}</title>
-  <link>${SITE.url}${p.url}</link>
-  <guid>${SITE.url}${p.url}</guid>
-  <pubDate>${new Date(`${p.date}T00:00:00Z`).toUTCString()}</pubDate>
-  <description>${cdata(p.html)}</description>
-</item>`).join('\n')}
-</channel>
-</rss>
-`);
 
 console.log(`Built ${posts.length} post(s) into ${path.relative(rootDir, outDir)}${includeDrafts ? ' (including drafts)' : ''}`);
