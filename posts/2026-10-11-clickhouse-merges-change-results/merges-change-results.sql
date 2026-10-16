@@ -8,14 +8,19 @@
 DROP TABLE IF EXISTS page_stats;
 CREATE TABLE page_stats (day Date, page String, views Int64, title String)
 ENGINE = SummingMergeTree ORDER BY (day, page);
+SYSTEM STOP MERGES page_stats;
 INSERT INTO page_stats VALUES ('2026-10-10', '/home',  10, 'Home');
 INSERT INTO page_stats VALUES ('2026-10-10', '/home',   5, 'Home (new title)');
 INSERT INTO page_stats VALUES ('2026-10-10', '/promo',  7, 'Promo');
 INSERT INTO page_stats VALUES ('2026-10-10', '/promo', -7, 'Promo');
-SELECT _part, * FROM page_stats ORDER BY page, _part;
-SELECT page, sum(views) FROM page_stats GROUP BY page ORDER BY page;
+SELECT _part, page, views, title FROM page_stats ORDER BY _part;          -- four parts, one row each
+SELECT * FROM page_stats ORDER BY page, views;                            -- a plain SELECT: all four rows
+SELECT page, sum(views) AS total FROM page_stats GROUP BY page ORDER BY page;   -- /home 15, /promo 0
+SYSTEM START MERGES page_stats;
 OPTIMIZE TABLE page_stats FINAL;
-SELECT _part, * FROM page_stats ORDER BY page;                  -- only /home, title 'Home'
+SELECT _part, page, views, title FROM page_stats ORDER BY _part;          -- only /home, title 'Home'
+SELECT page, sum(views) AS total FROM page_stats GROUP BY page ORDER BY page;   -- /promo is gone
+SELECT page, sum(views) AS total FROM page_stats GROUP BY page HAVING sum(views) != 0 ORDER BY page;   -- same answer before and after
 
 -- AggregatingMergeTree: a plain column changes value after a merge
 -- (since 26.7 this CREATE fails without allow_dimensions_outside_sorting_key = 1)
@@ -45,7 +50,7 @@ INSERT INTO user_state VALUES (2, 5, -1);
 INSERT INTO user_state VALUES (2, 5, 1);
 OPTIMIZE TABLE user_state FINAL;
 SELECT _part, * FROM user_state ORDER BY user_id;               -- user 2 keeps both rows
-SELECT user_id, sum(page_views * sign) AS page_views
+SELECT user_id, sum(toInt64(page_views) * sign) AS page_views
 FROM user_state GROUP BY user_id HAVING sum(sign) > 0 ORDER BY user_id;
 
 -- VersionedCollapsingMergeTree: same out-of-order rows collapse
