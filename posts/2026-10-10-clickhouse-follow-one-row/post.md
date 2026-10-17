@@ -27,6 +27,14 @@ I knew the semantics. I'd read the official ClickHouse docs and plenty of blog p
 
 I followed one order through its life in ClickHouse: insert, parts, merges, updates and duplicates. I captured real output at each step and looked up in the source code why it behaves that way. Where a single row wasn't enough to show something, I used a bigger batch or a separate test table, and I say so each time.
 
+## TL;DR
+
+- **"Why do I still see the old value?"** The new version sits in a different part that hasn't been merged with the old one yet, and merges are lazy. If the two versions are in different partitions, they will never be merged. Read with `FINAL` or `argMax`, and keep every version of a row in the same partition.
+- **"Why are we getting `Too many parts`?"** A non-empty INSERT normally creates at least one part per partition. Many small INSERTs, or a partition key that's too fine, create parts faster than merges can combine them. Batch on the client, or use async inserts when many clients write at once.
+- **"Why doesn't my `SELECT` show the values I expect?"** In `Summing`, `Aggregating` and `Collapsing` tables, merges change the rows themselves, so re-aggregate in every query. [Part 2](/posts/clickhouse-merges-change-results/) covers this in detail.
+
+The rest of the post shows where these answers come from.
+
 ## Preparations
 
 Before we look inside ClickHouse, let's do some preparations. We'll use Docker for simplicity and one small table. Every query here is in [one script](follow-one-row.sql), so you can check any claim yourself as you read.
@@ -737,13 +745,7 @@ The result is wrong, and there is no error.
 
 ## Back to the coffee break
 
-Here are the short answers I give now:
-
-- **"Why do I still see the old value?"** The new version is in a different part that hasn't been merged yet. Merges are lazy, so that can last a long time. If the versions are in different partitions, they will never be merged. Read with `FINAL` or `argMax`, and make sure every version of a row lands in the same partition.
-- **"Why are we getting `Too many parts`?"** A non-empty INSERT normally creates at least one part per partition per insert block. Many small INSERTs, or a partition key that's too fine, create parts faster than merges can combine them. Batch on the client, or use async inserts if you have many concurrent writers.
-- **"Why doesn't my `SELECT` show what I expect?"** In `Summing`, `Aggregating` and `Collapsing` tables, merges change the rows themselves, so the answer depends on which merges have happened. That one gets its own post: [Part 2](/posts/clickhouse-merges-change-results/).
-
-And the longer version, as a checklist:
+The short answers are in the TL;DR at the top. Here is the longer version, as a checklist:
 
 | Area | Rule |
 |---|---|

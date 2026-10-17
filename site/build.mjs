@@ -24,7 +24,7 @@ const outDir = path.join(siteDir, '_site');
 const includeDrafts = process.argv.includes('--drafts');
 
 // Files next to post.md that are published with the post (scripts, images).
-const PUBLISHED_EXTENSIONS = new Set(['.sql', '.sh', '.py', '.png', '.jpg', '.jpeg', '.svg', '.gif', '.webp']);
+const PUBLISHED_EXTENSIONS = new Set(['.sql', '.sh', '.py', '.yml', '.png', '.jpg', '.jpeg', '.svg', '.gif', '.webp']);
 
 const escapeHtml = (s) => String(s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
