@@ -15,11 +15,7 @@ In [Part 1](/posts/clickhouse-follow-one-row/), I followed an order from INSERT 
 
 I usually hear this question from people using `SummingMergeTree`, `AggregatingMergeTree`, or `CollapsingMergeTree`. In these engines, a merge can change the rows themselves: it sums them, collapses them, or removes them. As a result, the same query can return different results depending on how many merges have occurred.
 
-Keep three facts from Part 1 in mind:
-
-- Each inserted block typically creates one or more new parts. ClickHouse doesn't modify an existing part in place; a merge writes a new, larger part and removes the old parts later.
-- Merges run in the background when the merge selector decides they're worthwhile. You can't predict exactly when two rows will end up in the same part.
-- Merges never cross partition boundaries.
+If you skipped Part 1, three things from it matter here. Each inserted block typically creates one or more new parts, and ClickHouse never modifies a part in place; a merge writes a new, larger part and removes the old ones later. Merges run in the background whenever the merge selector decides they're worthwhile, so you can't predict when two rows will end up in the same part. And merges never cross partition boundaries.
 
 Everything here ran on ClickHouse 26.9.
 
@@ -38,7 +34,7 @@ In Part 1, `ReplacingMergeTree` kept the latest version of each order. It's one 
 
 The important question is *when* that transformation happens. The engine's merge logic is applied at three points, using the same algorithm classes:
 
-1. **On insert**, within a single insert block. This is why newly inserted parts for these engines start at level 1. `MergeTreeDataWriter::mergeBlock` selects the algorithm ([source](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Storages/MergeTree/MergeTreeDataWriter.cpp#L596-L660)):
+1. On insert, within a single insert block. This is why newly inserted parts for these engines start at level 1. `MergeTreeDataWriter::mergeBlock` selects the algorithm ([source](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Storages/MergeTree/MergeTreeDataWriter.cpp#L596-L660)):
 
    ```cpp
    switch (merging_params.mode)
@@ -56,8 +52,8 @@ The important question is *when* that transformation happens. The engine's merge
    }
    ```
 
-2. **During a background merge**, for the selected parts within a single partition ([`MergeTask.cpp`](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Storages/MergeTree/MergeTask.cpp#L2929)).
-3. **At query time, when `FINAL` is used**, for the parts read by the query ([`MergeTreeFinalMerge.cpp`](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Processors/QueryPlan/MergeTreeFinalMerge.cpp#L63)).
+2. During a background merge, for the selected parts within a single partition ([`MergeTask.cpp`](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Storages/MergeTree/MergeTask.cpp#L2929)).
+3. At query time, when `FINAL` is used, for the parts read by the query ([`MergeTreeFinalMerge.cpp`](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Processors/QueryPlan/MergeTreeFinalMerge.cpp#L63)).
 
 Between these stages, rows with the same key can remain in separate parts, unprocessed. A plain `SELECT` sees whatever state the background merges have reached so far. Here's what that means for each engine. In the `SummingMergeTree` and `CollapsingMergeTree` examples, each INSERT starts its own part, and I then force a full merge with `OPTIMIZE TABLE ... FINAL`. The `AggregatingMergeTree` example uses batches instead.
 
@@ -69,7 +65,7 @@ Between these stages, rows with the same key can remain in separate parts, unpro
 
 Instead of keeping one row per event, the table combines values for each key as parts merge. A typical use case is daily statistics, such as page views per page per day, often populated by a materialized view. The documentation also recommends retaining the raw events in a plain `MergeTree` table alongside it, so a mistake in the sorting key doesn't result in data loss.
 
-Here is a small example:
+Here's the table I played with:
 
 ```sql
 CREATE TABLE page_stats (day Date, page String, views Int64, title String)
@@ -161,11 +157,11 @@ Both behaviors are documented in the algorithm's header ([source](https://github
   */
 ```
 
-There are three takeaways:
+The first thing that bit me is the obvious one: a key whose numeric values all sum to 0 can disappear. The `/promo` views summed to 0, so the merge deleted the row. For page-view counts that's fine, but if the table stores account balances, an account with a zero balance quietly vanishes from it.
 
-- **A key whose numeric values all sum to 0 can disappear.** The `/promo` views summed to 0, so the merge deleted that row. That's fine for page-view counts, but if the table stores account balances, an account with a zero balance can disappear from the table.
-- **Even the aggregate query can change its output row set.** Before the merge, the `GROUP BY` query above returned `/promo` with a total of 0. After the merge, the same query returns only `/home`. To keep the output consistent, add `HAVING sum(views) != 0`; this hides zero-total groups before a merge, too.
-- **The `title` column retained `'Home'` and discarded `'Home (new title)'`.** Non-numeric columns outside the sorting key aren't summed. One value survives, and you don't control which one.
+The second one I didn't expect at all. I assumed that a query which sums the rows itself is safe no matter what the merges do, and it mostly is, but not about which rows come back. Before the merge, the `GROUP BY` query above returned `/promo` with a total of 0; after the merge, the same query returns only `/home`. To keep the output the same either way, add `HAVING sum(views) != 0`, which hides zero totals before a merge too. (My first version of that query failed with `ILLEGAL_AGGREGATION`, because I'd named the result `views`, the same as the column, and ClickHouse then read `sum(views)` in `HAVING` as a sum of the sum. Hence `total`.)
+
+The third is the `title` column, which kept `'Home'` and threw away `'Home (new title)'`. Non-numeric columns outside the sorting key aren't summed, one value survives, and you don't get to choose which.
 
 ### AggregatingMergeTree: a plain column changes its value after a merge
 
@@ -180,7 +176,7 @@ CREATE TABLE daily
 ENGINE = AggregatingMergeTree ORDER BY day;
 ```
 
-On ClickHouse 26.9, this `CREATE TABLE` statement fails:
+This is where 26.9 surprised me: the `CREATE TABLE` statement fails before I can even insert anything.
 
 ```
 Column(s) cnt_plain of the AggregatingMergeTree table are neither part of the sorting key nor
@@ -189,7 +185,7 @@ with the same value of the sorting key are collapsed into one, so these columns 
 value, which silently produces wrong results ...
 ```
 
-This validation was introduced in 26.7. Older versions accepted the schema without warning. To demonstrate what the check prevents, I recreated the table with `SETTINGS allow_dimensions_outside_sorting_key = 1` (the old behavior) and inserted two batches containing 10 and 5 events:
+The check was added in 26.7, and older versions accepted this schema without a word. I only found out because my experiment script, written the old way, failed on 26.9. To show what the check prevents, I recreated the table with `SETTINGS allow_dimensions_outside_sorting_key = 1` (the old behavior) and inserted two batches containing 10 and 5 events:
 
 | Query | Before merge | After merge |
 |---|---|---|
@@ -197,7 +193,7 @@ This validation was introduced in 26.7. Older versions accepted the schema witho
 | `sum(cnt)` | 15 | 15 |
 | `uniqMerge(users)` | 12 | 12 |
 
-The result of the same query depends on whether a merge has occurred. `cnt_plain` retains the first row's value, as the algorithm's header explains ([source](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Processors/Merges/Algorithms/AggregatingSortedAlgorithm.h#L14-L19)): *"For columns that are not part of the primary key and which do not have the AggregateFunction type, when merged, the first value is selected."* `SimpleAggregateFunction(sum, ...)` and `AggregateFunction(...)` columns combine correctly across merge states.
+So the same query gives 15 before the merge and 10 after it. `cnt_plain` retains the first row's value, as the algorithm's header explains ([source](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Processors/Merges/Algorithms/AggregatingSortedAlgorithm.h#L14-L19)): *"For columns that are not part of the primary key and which do not have the AggregateFunction type, when merged, the first value is selected."* `SimpleAggregateFunction(sum, ...)` and `AggregateFunction(...)` columns combine correctly across merge states.
 
 The same principle applies when querying: always re-aggregate with functions such as `sum(cnt)` and `uniqMerge(users)`, grouped by the sorting key. Some rows may already have been merged while others haven't; re-aggregation makes the result independent of that state.
 
@@ -240,20 +236,18 @@ User 1 collapsed as expected. User 2's pair survived a full merge. The reason is
 
 Within each sorting key, rows are processed in part order (by block number). In this example, user 2's `-1` part came first, so the group ended with a positive row and both rows survived. With parallel writers, retries, or Kafka partitions, cancellation rows can arrive before the states they cancel.
 
-There are two ways to keep the query correct:
+You can keep the query correct in two ways. The first is to let `sign` do the work in the query, which gives the right answer whether or not the rows have collapsed yet:
 
-- **Query using `sign`**; this gives the expected answer whether or not the rows have already collapsed:
+```sql
+SELECT user_id, sum(toInt64(page_views) * sign) AS page_views
+FROM user_state
+GROUP BY user_id
+HAVING sum(sign) > 0;
+```
 
-  ```sql
-  SELECT user_id, sum(toInt64(page_views) * sign) AS page_views
-  FROM user_state
-  GROUP BY user_id
-  HAVING sum(sign) > 0;
-  ```
+This returns only user 1, with 6 page views, because user 2's rows cancel each other out in the sums.
 
-  This returns only user 1, with 6 page views. User 2's rows cancel each other out in the sums.
-
-- **Use `VersionedCollapsingMergeTree(sign, version)`.** It matches a `-1` row with a `+1` row of the same version, regardless of their order ([source](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Processors/Merges/Algorithms/VersionedCollapsingAlgorithm.h#L11-L15)). Repeating the out-of-order inserts for user 2 with `version = 1` on both rows left no rows after `OPTIMIZE TABLE ... FINAL`.
+The second is to switch to `VersionedCollapsingMergeTree(sign, version)`, which I'd honestly prefer whenever the writers aren't strictly ordered. It matches a `-1` row with a `+1` row of the same version, regardless of their order ([source](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Processors/Merges/Algorithms/VersionedCollapsingAlgorithm.h#L11-L15)). Repeating the out-of-order inserts for user 2 with `version = 1` on both rows left no rows after `OPTIMIZE TABLE ... FINAL`.
 
 ### The rule for all of them
 
@@ -325,23 +319,12 @@ Instead of rewriting a 4 MiB part to change one value, ClickHouse wrote a 1 KiB 
 
 ## Back to the coffee break
 
-- **"Why doesn't my `SELECT` show what I expect?"** In `SummingMergeTree`, `AggregatingMergeTree`, and `CollapsingMergeTree` tables, the raw rows depend on which merges have occurred. Write every query so it returns the same result whether no merges, some merges, or all possible merges have taken place. In practice, that means re-aggregating at query time.
+So, *"Why doesn't my `SELECT` show what I expect?"* In `SummingMergeTree`, `AggregatingMergeTree` and `CollapsingMergeTree` tables, the raw rows depend on which merges have happened, so every query should give the same result whether no merges, some merges or all of them have run. In practice that means re-aggregating at query time.
 
-The checklist:
-
-| Area | Rule |
-|---|---|
-| Table design | In an `AggregatingMergeTree`, every column is either in `ORDER BY` or an aggregate (`SimpleAggregateFunction` or `AggregateFunction`). Since 26.7, ClickHouse rejects other schemas. |
-| Table design | In a `SummingMergeTree`, a row can be deleted on merge when all its summed numeric columns are zero. Keep that in mind for values where zero means something, such as account balances. |
-| Table design | Prefer `VersionedCollapsingMergeTree` when cancel rows can arrive before the rows they cancel. |
-| Querying | In `Summing`, `Aggregating` and `Collapsing` tables, always re-aggregate: `sum`, `-Merge` combinators, `sum(col * sign)`, with `GROUP BY` the key. |
-| Querying | Merges save storage. Your queries have to be correct without them. |
-| Operations | Use lightweight `DELETE`/`UPDATE` for targeted changes when appropriate, `DROP PARTITION` to remove an entire partition, and classic mutations when their full-rewrite behavior is needed. |
+A few more things I'd tell a colleague. In an `AggregatingMergeTree`, put every column either in `ORDER BY` or into an aggregate (`SimpleAggregateFunction` or `AggregateFunction`); since 26.7 ClickHouse won't let you do anything else, which I think is a good call. In a `SummingMergeTree`, remember that a row disappears on merge when all its numeric columns sum to zero, so think twice before storing anything where zero is a meaningful value, like balances. If cancel rows can arrive before the rows they cancel, use `VersionedCollapsingMergeTree`. And for deletes, use lightweight `DELETE`/`UPDATE` for targeted changes, `DROP PARTITION` when a whole partition goes, and classic mutations only when you actually want the full rewrite.
 
 ## Further reading
 
-- The official documentation for [`SummingMergeTree`](https://clickhouse.com/docs/engines/table-engines/mergetree-family/summingmergetree), [`AggregatingMergeTree`](https://clickhouse.com/docs/engines/table-engines/mergetree-family/aggregatingmergetree), [`CollapsingMergeTree`](https://clickhouse.com/docs/engines/table-engines/mergetree-family/collapsingmergetree) and [`VersionedCollapsingMergeTree`](https://clickhouse.com/docs/engines/table-engines/mergetree-family/versionedcollapsingmergetree).
-- The official documentation for [lightweight `DELETE`](https://clickhouse.com/docs/guides/developer/lightweight-delete) and [lightweight `UPDATE`](https://clickhouse.com/docs/sql-reference/statements/update).
-- Source code: [`src/Processors/Merges/Algorithms/`](https://github.com/ClickHouse/ClickHouse/tree/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Processors/Merges/Algorithms), where the merge rules for these engines are implemented.
+The official docs for [`SummingMergeTree`](https://clickhouse.com/docs/engines/table-engines/mergetree-family/summingmergetree), [`AggregatingMergeTree`](https://clickhouse.com/docs/engines/table-engines/mergetree-family/aggregatingmergetree), [`CollapsingMergeTree`](https://clickhouse.com/docs/engines/table-engines/mergetree-family/collapsingmergetree) and [`VersionedCollapsingMergeTree`](https://clickhouse.com/docs/engines/table-engines/mergetree-family/versionedcollapsingmergetree) are worth reading after this, along with the pages on [lightweight `DELETE`](https://clickhouse.com/docs/guides/developer/lightweight-delete) and [lightweight `UPDATE`](https://clickhouse.com/docs/sql-reference/statements/update). And if you want the actual rules, they live in [`src/Processors/Merges/Algorithms/`](https://github.com/ClickHouse/ClickHouse/tree/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Processors/Merges/Algorithms); the comments at the top of each file are surprisingly readable.
 
 All SQL used in these experiments is available in [a single script](merges-change-results.sql) that you can run against a fresh container.

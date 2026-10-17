@@ -29,9 +29,9 @@ I followed one order through its life in ClickHouse: insert, parts, merges, upda
 
 ## TL;DR
 
-- **"Why do I still see the old value?"** The new version sits in a different part that hasn't been merged with the old one yet, and merges are lazy. If the two versions are in different partitions, they will never be merged. Read with `FINAL` or `argMax`, and keep every version of a row in the same partition.
-- **"Why are we getting `Too many parts`?"** A non-empty INSERT normally creates at least one part per partition. Many small INSERTs, or a partition key that's too fine, create parts faster than merges can combine them. Batch on the client, or use async inserts when many clients write at once.
-- **"Why doesn't my `SELECT` show the values I expect?"** In `Summing`, `Aggregating` and `Collapsing` tables, merges change the rows themselves, so re-aggregate in every query. [Part 2](/posts/clickhouse-merges-change-results/) covers this in detail.
+- *"Why do I still see the old value?"* The new version sits in a different part that hasn't been merged with the old one yet, and merges are lazy. If the two versions are in different partitions, they will never be merged. Read with `FINAL` or `argMax`, and keep every version of a row in the same partition.
+- *"Why are we getting `Too many parts`?"* A non-empty INSERT normally creates at least one part per partition. Many small INSERTs, or a partition key that's too fine, create parts faster than merges can combine them. Batch on the client, or use async inserts when many clients write at once.
+- *"Why doesn't my `SELECT` show the values I expect?"* In `Summing`, `Aggregating` and `Collapsing` tables, merges change the rows themselves, so re-aggregate in every query. [Part 2](/posts/clickhouse-merges-change-results/) covers this in detail.
 
 The rest of the post shows where these answers come from.
 
@@ -96,9 +96,9 @@ WHERE table = 'orders' AND active;
 └──────────────┴───────────┴──────┴───────┘
 ```
 
-Three INSERTs, three parts.
+Three INSERTs gave me three parts.
 
-### What is a part, actually?
+### What a part is
 
 The [official docs](https://clickhouse.com/docs/parts) describe it like this:
 
@@ -156,30 +156,16 @@ total 52
 -rw-r----- 1 clickhouse clickhouse 536 Oct 11 12:45 statistics.packed
 ```
 
-The most important files:
+Only a few of these files matter for now. `data.bin` holds the values of all four columns, compressed. `primary.cidx` is the primary index, a handful of `order_id` values that help find rows quickly, and `data.cmrk4` holds the marks, which say where in `data.bin` each group of rows starts. `count.txt` has the number of rows (`1`), `columns.txt` the column names and types, `partition.dat` and `minmax_updated_at.idx` record the partition and the smallest and largest `updated_at` in the part, and `checksums.txt` keeps a checksum of every file so ClickHouse can notice corruption.
 
-| File | What's inside |
-|---|---|
-| `data.bin` | The values of all four columns, compressed |
-| `primary.cidx` | The primary index: a few `order_id` values that help find rows quickly |
-| `data.cmrk4` | Marks: where in `data.bin` each group of rows starts |
-| `count.txt` | The number of rows (`1`) |
-| `columns.txt` | Column names and types |
-| `partition.dat`, `minmax_updated_at.idx` | The partition, and the smallest and largest `updated_at` in the part |
-| `checksums.txt` | A checksum of every file, to detect corruption |
-
-So how much space does one order take? The same part gives three different answers:
-
-- **161 bytes** is the size of `data.bin` in the listing above, which holds this part's one row, compressed. It depends on the column types and the compression, so it isn't a fixed cost per row.
-- **1,250 bytes** is what `system.parts` reports as `bytes_on_disk`. It adds up the files listed in `checksums.txt` ([source](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Storages/MergeTree/MergeTreeDataPartChecksum.cpp#L99-L105)), which leaves out `checksums.txt` itself and four small metadata files.
-- **56 KiB** is what the filesystem uses. On this container's filesystem, every file takes at least one 4 KiB block, and there are 13 files plus the directory:
+How much disk does one order cost? My first answer was 1,250 bytes, because that's what `system.parts` reports as `bytes_on_disk`, and that's the number that went into the first draft of this post. Then I added up the sizes from `ls -l` and got 2,032, which didn't match at all. It turns out `bytes_on_disk` only adds up the files listed in `checksums.txt` ([source](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Storages/MergeTree/MergeTreeDataPartChecksum.cpp#L99-L105)), and that list leaves out `checksums.txt` itself and four small metadata files. The column data, `data.bin`, is 161 bytes, and even that depends on the column types and the compression, so it isn't a fixed cost per row. The filesystem, meanwhile, doesn't care about any of these numbers. On this container's filesystem every file takes at least one 4 KiB block, there are 13 files plus the directory, and `du` agrees:
 
 ```
 $ docker exec ch du -k /var/lib/clickhouse/store/621/62173928-.../202610_1_1_1/
 56	/var/lib/clickhouse/store/621/62173928-.../202610_1_1_1/
 ```
 
-Here, one order took 161 bytes of data and 56 KiB of disk. A tiny part is almost all overhead.
+So one order took 161 bytes of data and 56 KiB of disk, which means a tiny part is almost all overhead.
 
 A big INSERT turns this around. Into a copy of the same table, I inserted one million orders with a single INSERT. They all fall in October, so they became one part:
 
@@ -202,7 +188,7 @@ $ docker exec ch du -k /var/lib/clickhouse/store/a7a/a7a4bb8f-.../202610_1_1_1/
 12604	/var/lib/clickhouse/store/a7a/a7a4bb8f-.../202610_1_1_1/
 ```
 
-This part is *Wide*: each column has its own `.bin` file with its own marks. The small files are still there, and they're about the same size as in the one-row part.
+This part is *Wide*: each column has its own `.bin` file and its own marks file, which is also why a query that reads one column of a wide table never touches the others. The small metadata files are still there, about the same size as in the one-row part.
 
 | | One order per INSERT | One million orders in one INSERT |
 |---|---|---|
@@ -213,16 +199,9 @@ This part is *Wide*: each column has its own `.bin` file with its own marks. The
 | Share that is column data | 0.3% | 99.3% |
 | Disk per order | 56 KiB | about 13 bytes |
 
-The overhead of a part is roughly fixed. Spread over a million rows, it disappears. One caveat about my test data: `status` cycles through three values in a fixed order, so it compresses almost to nothing (5 KiB for a million rows). Real data compresses less, but the per-part overhead stays the same.
+The overhead of a part is roughly fixed, so with a million rows behind it you stop noticing it: about 13 bytes per order. I should admit my test data flatters the result a bit. `status` cycles through three values in a fixed order and compresses to almost nothing (5 KiB for a million rows), and real data compresses worse. The per-part overhead doesn't change, though, and that's the point here.
 
-These parts are small, so all columns share one `data.bin`. A bigger part gets a separate file for each column instead: `order_id.bin`, `status.bin`, `amount.bin`, `updated_at.bin`, each with its own marks file. That's why a query that reads one column of a wide table doesn't touch the others.
-
-Four properties make a part a part:
-
-- **It never changes.** ClickHouse never adds rows to an existing part or edits one in place. New data means a new part. Combining parts means writing a new, bigger part and deleting the old ones later.
-- **It's sorted, but only inside itself.** The rows in a part are in `ORDER BY` order. Two parts know nothing about each other, so they can hold overlapping keys, even the same `order_id`.
-- **It belongs to exactly one partition.** All rows in `202610_1_1_1` are from October 2026.
-- **It's self-contained.** It carries its own index, marks, column list and checksums. To answer a `SELECT`, ClickHouse reads every active part of the table, skipping the ones its indexes rule out, and combines the results.
+A few things about parts are worth keeping in your head for the rest of this post. A part never changes: ClickHouse doesn't add rows to an existing part or edit one in place, it writes a new part, and combining parts means writing a bigger one and deleting the old ones later. A part is sorted by `ORDER BY`, but only inside itself. Two parts know nothing about each other, so they can both hold the same `order_id`, which is exactly how duplicates happen. Every part belongs to one partition (all rows in `202610_1_1_1` are from October 2026), and every part is self-contained, with its own index, marks, column list and checksums. To answer a `SELECT`, ClickHouse reads every active part its indexes don't rule out and combines the results.
 
 The part name `202610_1_1_1` encodes its history. The [official docs for `system.parts`](https://clickhouse.com/docs/operations/system-tables/parts) explain the format:
 
@@ -242,7 +221,7 @@ So `202610_1_1_1` is partition `202610`, blocks 1 to 1, level 1.
 
 Hold on. *Block* number?
 
-### What is a block, actually?
+### Three things called a block
 
 The word shows up everywhere in ClickHouse, and I had never stopped to ask whether it always means the same thing:
 
@@ -308,11 +287,7 @@ FROM (SELECT blockSize() AS bs, blockNumber() AS bn FROM numbers(1000000));
 
 One million rows travel as 16 blocks: 15 full ones of 65,409 rows and one of 18,865.
 
-For an INSERT, ClickHouse wants much bigger blocks, because every insert block becomes at least one part. How big a block gets depends on how the data arrives:
-
-- **`INSERT ... VALUES`, or a file in CSV, JSON and similar formats:** ClickHouse cuts the data into blocks of up to about 1 million rows (`max_insert_block_size`). A typical INSERT from an application is smaller than that, so it's a single block.
-- **`INSERT ... SELECT`:** the SELECT produces small blocks of 65,409 rows. Before they reach the table, ClickHouse glues them together until a block has about 1 million rows (`min_insert_block_size_rows`) or 256 MiB (`min_insert_block_size_bytes`), whichever comes first ([source](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Interpreters/InterpreterInsertQuery.cpp#L634-L665)).
-- **Async inserts:** ClickHouse collects many small INSERTs in a buffer on the server and writes each full buffer as one block. So many small INSERTs from different clients end up in a few parts instead of one part each.
+For an INSERT, ClickHouse wants much bigger blocks, because every insert block becomes at least one part. How big a block gets depends on how the data arrives. With `INSERT ... VALUES`, or a file in CSV, JSON and similar formats, ClickHouse cuts the data into blocks of up to about 1 million rows (`max_insert_block_size`), and since a typical INSERT from an application is much smaller than that, it ends up as a single block. `INSERT ... SELECT` is different: the SELECT produces small blocks of 65,409 rows, and before they reach the table ClickHouse glues them together until a block has about 1 million rows (`min_insert_block_size_rows`) or 256 MiB (`min_insert_block_size_bytes`), whichever comes first ([source](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Interpreters/InterpreterInsertQuery.cpp#L634-L665)). And with async inserts, ClickHouse collects many small INSERTs in a buffer on the server and writes each full buffer as one block, so lots of small INSERTs from different clients end up in a few parts instead of one part each.
 
 One order is far too small to hit these limits, so I used a separate test table. I ran two big `INSERT ... SELECT`s into it with merges switched off:
 
@@ -321,14 +296,9 @@ INSERT INTO blocks_demo SELECT number, '' FROM numbers(3000000);                
 INSERT INTO blocks_demo SELECT number, randomPrintableASCII(1000) FROM numbers(600000); -- 1 KB rows
 ```
 
-| INSERT | Parts created | Why |
-|---|---|---|
-| 3 million small rows | 3 | Each block hit the 1-million-row limit, and the last part got the rest |
-| 600,000 rows of 1 KB | 2 | The 256 MiB limit came first |
+The 3 million small rows became 3 parts: each block hit the 1-million-row limit, and the last part got whatever was left. The 600,000 rows of 1 KB each became 2 parts, because there the 256 MiB limit came first. The parts are a bit bigger than the limit (1,111,953 rows rather than 1 million), since ClickHouse keeps adding whole 65,409-row blocks until it crosses it.
 
-The parts are slightly bigger than the limit (1,111,953 rows, not 1 million) because ClickHouse adds whole 65,409-row blocks until it crosses the limit.
-
-So the full rule is one part per partition per insert block. A big `INSERT ... SELECT` creates several parts even in one partition. That's fine: the parts are large, and merges combine them later.
+So the full rule is one part per partition per insert block, and a big `INSERT ... SELECT` creates several parts even within one partition. I don't think that's worth worrying about, though: those parts are large, and merges will combine them later anyway.
 
 ### Inside one INSERT, step by step
 
@@ -462,10 +432,9 @@ else
     ProfileEvents::increment(ProfileEvents::MergeTreeDataWriterBlocksAlreadySorted);
 ```
 
-Sorting here means computing a *permutation*, an array that says "row 5 goes first, then row 2, then …". Columns are reordered one at a time later, right before each one is written to disk. Two details matter:
+Sorting here means computing a *permutation*, an array that says "row 5 goes first, then row 2, then …". Columns are reordered one at a time later, right before each one is written to disk.
 
-- **The sort is stable.** Rows with equal keys keep their order from the INSERT. That matters in a `ReplacingMergeTree` without a version column: when one INSERT carries several versions of a row, the last one is kept. Between parts, the part committed later wins. Our `orders` table has a version column, `updated_at`, so there the highest version wins in any order.
-- **Already-sorted input is detected and skipped.** The check is cheap compared with a sort.
+The sort is stable, so rows with equal keys keep their order from the INSERT. That sounds like trivia until you use a `ReplacingMergeTree` without a version column: when one INSERT carries several versions of a row, the last one is the one that's kept, and between parts the part committed later wins. Our `orders` table has a version column, `updated_at`, so for us the highest version wins no matter the order. The other detail is that input which is already sorted gets detected and skipped, and the check is cheap compared with an actual sort.
 
 Sorting one order takes no time at all, so to measure it I used a separate table with `ORDER BY id`. I inserted the same million rows twice, once in order and once shuffled, and read the profile counters from `system.query_log`:
 
@@ -477,12 +446,7 @@ FROM system.query_log
 WHERE query_id IN ('blog_sorted', 'blog_shuffled') AND type = 'QueryFinish';
 ```
 
-| Input | Already sorted? | Time spent sorting |
-|---|---|---|
-| 1M rows in `ORDER BY` order | yes | 1.3 ms |
-| The same rows shuffled | no | 52.2 ms |
-
-These timings are from my laptop (Apple M1 Pro, Docker Desktop), so treat them as an illustration. The shuffled time varies between runs (36 to 52 ms in mine), but sorted input stays roughly 30 to 40 times cheaper. The check is exact: a block must be fully sorted by the whole `ORDER BY` key, and a block that is only mostly sorted gets sorted as usual. So if your pipeline can send each batch already sorted by the key, for example by event time when time leads the key, ClickHouse skips that work.
+The sorted million rows were recognised as already sorted and took 1.3 ms. The shuffled copy wasn't, and sorting it took 52.2 ms. That's on my laptop (Apple M1 Pro, Docker Desktop), so take it as an illustration rather than a benchmark: the shuffled number jumped around between 36 and 52 ms across my runs, but the sorted input always stayed 30 to 40 times cheaper. The check is exact: a block must be fully sorted by the whole `ORDER BY` key, and a block that is only mostly sorted gets sorted as usual. So if your pipeline can send each batch already sorted by the key, for example by event time when time leads the key, ClickHouse skips that work.
 
 #### Step 3: merge on insert, and why the level is 1
 
@@ -543,13 +507,9 @@ FROM mergeTreeIndex(currentDatabase(), index_demo, with_marks = true);
 └─────────────┴─────────────────┴─────────────┴────────────────┴────────────────┘
 ```
 
-How to read it:
+The thing that surprised me most is how small this is. The whole primary index for a million rows is 124 values, and `system.parts` reports `primary_key_bytes_in_memory` = 992 bytes, which is why a sparse index fits in RAM even for billions of rows. `index_value` is the key of each granule's first row: to find `id = 20000`, ClickHouse binary-searches these values, sees that it falls in granule 2 (16384–24575), and reads only that granule.
 
-- **The whole primary index for a million rows is 124 values.** `system.parts` reports `primary_key_bytes_in_memory` = 992 bytes. That's why a sparse index fits in RAM even for billions of rows.
-- **`index_value`** is the key of each granule's first row. To find `id = 20000`, ClickHouse binary-searches these values, sees that it falls in granule 2 (16384–24575), and reads only that granule.
-- **`id` starts a new compressed block at every granule**, so its second number is always 0. A granule of `id` is 8192 × 8 bytes = 64 KiB, exactly `min_compress_block_size`.
-- **`v` (short strings) is smaller per granule**, so two granules share one compressed block. Mark 1 says: decompress the block at file offset 0, then skip 31,658 bytes.
-- **The last granule has 576 rows** (1,000,000 − 122 × 8192). Mark 123 is a final mark with 0 rows that records the end of the data and the last key.
+The marks take a bit more squinting. For `id`, the second number is always 0, because `id` starts a new compressed block at every granule: a granule of `id` is 8192 × 8 bytes = 64 KiB, exactly `min_compress_block_size`. `v` holds short strings, so its granules are smaller and two of them share one compressed block. Mark 1 for `v` says: decompress the block at file offset 0, then skip 31,658 bytes. At the end, the last real granule has 576 rows (1,000,000 − 122 × 8192), and mark 123 is a final mark with 0 rows that only records where the data ends and what the last key is.
 
 All of this goes into the part's `tmp_insert_...` directory:
 
@@ -576,15 +536,15 @@ MergeTreeData::Transaction transaction(storage, context->getCurrentTransaction()
 }
 ```
 
-Under the table's parts lock, three things happen:
+All of this happens under the table's parts lock. First, the part gets its block number, and only now, not when the data was written: `fillNewPartName` takes the next number from the table's counter and sets the part's name ([source](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Storages/StorageMergeTree.cpp#L4808-L4817)). That's the "Allocated block number 9" line in the log. Block numbers therefore follow commit order, which is what lets merges reason about "newer" and "older" parts.
 
-1. **The block number is assigned now, not when the data was written.** `fillNewPartName` takes the next number from the table's counter and sets the part's name ([source](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Storages/StorageMergeTree.cpp#L4808-L4817)). That's the "Allocated block number 9" log line. Block numbers therefore follow commit order, which is what lets merges reason about "newer" and "older" parts. In a non-replicated table, one counter serves the whole table, so the three parts of our 20-order INSERT got 9, 10 and 11 even though they're in different partitions. `Replicated` tables keep a separate counter for each partition in Keeper ([source](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Storages/StorageReplicatedMergeTree.cpp#L7948-L7988)).
-2. **The directory is renamed** from `tmp_insert_202610_9_9_1` to `202610_9_9_1`. A rename within one filesystem is atomic, so readers see either no part or the complete part, never half of one.
-3. **The part joins the table's set of active parts.** Queries that start after this point include it.
+I got this counter wrong in my first draft. I wrote that it goes up once per INSERT, and a reader pointed out that one INSERT here produced three block numbers. The source is clearer than either of us was: in a non-replicated table one counter serves the whole table and is taken once per part, so the three parts of our 20-order INSERT got 9, 10 and 11 even though they're in different partitions. `Replicated` tables keep a separate counter for each partition in Keeper ([source](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Storages/StorageReplicatedMergeTree.cpp#L7948-L7988)).
+
+Then the directory is renamed from `tmp_insert_202610_9_9_1` to `202610_9_9_1`. A rename within one filesystem is atomic, so readers see either no part or the whole part, never half of one, and from this moment the part is in the table's set of active parts and queries that start afterwards include it.
 
 After the commit, the sink records the new part in `system.part_log` (a `NewPart` event) and wakes up the background merge scheduler ([source](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Storages/MergeTree/MergeTreeSink.cpp#L334)).
 
-Every INSERT asks for a merge, but that doesn't mean one happens. The merge selector decides whether merging is worth it yet.
+Every INSERT asks for a merge, but that doesn't mean one happens; the merge selector decides whether merging is worth it yet, and as we'll see in a moment, it's quite picky.
 
 You can see the counters for any of your own INSERTs:
 
@@ -602,12 +562,7 @@ For the 20-row INSERT above: `MergeTreeDataWriterBlocks` = 3 (one per partition)
 
 > "Why are we getting `Too many parts` errors?"
 
-Every part costs files on disk, metadata in memory, and a future merge. If a partition accumulates parts faster than merges can combine them, ClickHouse protects itself:
-
-- At `parts_to_delay_insert` = 1000 active parts in a partition, INSERTs are slowed down artificially.
-- At `parts_to_throw_insert` = 3000, INSERTs fail with `Too many parts`.
-
-These are the current defaults. Older posts quote 150/300, which were the defaults before 23.6.
+Every part costs files on disk, metadata in memory, and a future merge. If a partition piles up parts faster than merges can combine them, ClickHouse protects itself: at 1000 active parts in a partition (`parts_to_delay_insert`) it starts slowing INSERTs down on purpose, and at 3000 (`parts_to_throw_insert`) it rejects them with `Too many parts`. Those are the current defaults. A lot of older posts still quote 150 and 300, which were the defaults before 23.6.
 
 The classic cause is many small INSERTs. To see it, I used a separate test table and sent it 50 single-row INSERTs concurrently, with merges stopped:
 
@@ -617,14 +572,9 @@ for i in $(seq 1 50); do
 done; wait
 ```
 
-| Mode | Parts created | Rows |
-|---|---|---|
-| `async_insert = 0` | 50 | 50 |
-| `async_insert = 1` | 7 | 50 |
+With `async_insert = 0`, the 50 rows became 50 parts. Running the same loop with `async_insert = 1` gave 7 parts for the same 50 rows. With *asynchronous inserts*, the server buffers incoming INSERTs and writes one part per flush. A flush happens after 200 ms (`async_insert_busy_timeout_max_ms`) or 10 MiB (`async_insert_max_data_size`). Since 26.2, `async_insert` is on by default.
 
-With *asynchronous inserts*, the server buffers incoming INSERTs and writes one part per flush. A flush happens after 200 ms (`async_insert_busy_timeout_max_ms`) or 10 MiB (`async_insert_max_data_size`). Since 26.2, `async_insert` is on by default.
-
-Async inserts didn't help our `orders` table, though. The three single-row INSERTs into `orders` at the start ran with `async_insert = 1` and still produced three parts. With `wait_for_async_insert = 1` (the safe default), each INSERT waits until its data is flushed. A client that sends INSERTs one after another therefore never shares a buffer with anyone. Async inserts batch *concurrent* writers, for example many app servers, devices or Lambdas. A single sequential loop still has to batch on the client side.
+Since async inserts are on by default now, I assumed they had already batched my three single-row INSERTs into `orders` from the start of the post. They hadn't: those ran with `async_insert = 1` and still produced three parts. The reason is `wait_for_async_insert = 1` (the safe default), where each INSERT waits until its data is flushed, so a client that sends INSERTs one after another never shares a buffer with anyone. Async inserts batch *concurrent* writers, like many app servers, devices or Lambdas, and a single sequential loop still has to batch on the client side. I think that's easy to miss if you only read the release notes.
 
 <!-- TODO(you): add a sentence from your own experience — what's your ingestion pattern? -->
 
@@ -636,7 +586,7 @@ Background merges combine adjacent parts within one partition into a bigger part
 SYSTEM START MERGES orders;
 ```
 
-Nothing happened. Thirty seconds later, three parts were still there, and they stayed separate for the next six minutes.
+I expected a merge within seconds. Nothing happened. Thirty seconds later the three parts were still there, and they stayed separate for the next six minutes while I wondered whether I'd forgotten something.
 
 The reason is in [`SimpleMergeSelector.h`](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Storages/MergeTree/Compaction/MergeSelectors/SimpleMergeSelector.h#L117). The selector prefers to merge about `base = 5` parts of similar size at once, which keeps write amplification low. With fewer parts it relaxes that rule only gradually, as the parts get older (from 10 seconds up to an hour for small parts) or as their count grows (10 to 50 parts). Three tiny, fresh parts aren't worth a merge yet.
 
@@ -664,16 +614,13 @@ ORDER BY t;
 └────────────────────────────┴─────────────────┴──────────────┴──────────────────────────────────────────────────────┴──────┘
 ```
 
-The first three parts waited almost six minutes. When the fifth part arrived, a merge of exactly five parts started 0.2 ms later. The result, `202610_1_5_2`, covers blocks 1–5 at level 2. The sixth part keeps waiting for company.
+The first three parts waited almost six minutes, but when the fifth part arrived, a merge of exactly five parts started 0.2 ms later. The result, `202610_1_5_2`, covers blocks 1–5 at level 2, and the sixth part is left waiting for company.
 
 <!-- TODO(us): timeline chart from part_log — x = time, one bar per part, merged parts connected -->
 
 The merged-away parts don't disappear immediately. They stay as `active = 0` for `old_parts_lifetime` (8 minutes), so queries already reading them can finish.
 
-Two consequences matter in practice:
-
-- **Merges are eventual.** You can't predict when, or whether, two given rows end up in the same part. The six minutes and the five parts are what I saw in one run, not numbers to plan around.
-- **Merges never cross partitions.** Keep that in mind for the next section.
+What I take from this: merges are eventual, and you can't predict when, or even whether, two given rows end up in the same part. The six minutes and the five parts are just what I saw in one run, not numbers to plan around. And merges never cross partitions, which matters a lot in the next section.
 
 ## 4. Updating the order: duplicates and FINAL
 
@@ -694,7 +641,7 @@ SELECT * FROM orders WHERE order_id = 1;
 └──────────┴─────────┴────────┴─────────────────────────┘
 ```
 
-Two rows. The old version is in one part and the new one in another, and they haven't been merged yet. There are two correct ways to read it:
+Two rows, because the old version is in one part and the new one in another, and nothing has merged them yet. You can read it correctly either way:
 
 ```sql
 -- Let ClickHouse apply the merge logic at read time
@@ -705,7 +652,7 @@ SELECT order_id, argMax(status, updated_at) AS status
 FROM orders WHERE order_id = 1 GROUP BY order_id;       -- paid
 ```
 
-`FINAL` used to be slow. Today it runs in parallel and skips parts that can't contain duplicates, which is where those level-1 parts help. It's often the simplest way to get deduplicated results. Its cost still depends on the table layout and the query, so for performance-sensitive queries, measure it against `argMax`.
+`FINAL` has a reputation for being slow, and a lot of the advice you'll find online is from the days when it was. Today it runs in parallel and skips parts that can't contain duplicates (that's where those level-1 parts help), so it's often the simplest way to get deduplicated results. Its cost still depends on the table layout and the query, though, and for anything performance-sensitive I'd measure it against `argMax` before picking one.
 
 ### The partition trap
 
@@ -725,7 +672,7 @@ SELECT _partition_id, _part, * FROM orders WHERE order_id = 1;
 └───────────────┴──────────────┴──────────┴─────────┴─────────────────────────┘
 ```
 
-Even after a forced full merge, the duplicate is permanent. The two versions are in different partitions, and merges never cross partitions. `FINAL` still returns the right answer, because by default it deduplicates across partitions at read time, on every query. But turn on the popular optimization for `FINAL`:
+Even after a forced full merge the duplicate is still there, and it will stay there forever, because the two versions are in different partitions and merges never cross partitions. `FINAL` still returns the right answer, because by default it deduplicates across partitions at read time, on every query. But turn on the popular optimization for `FINAL`:
 
 ```sql
 SELECT * FROM orders FINAL WHERE order_id = 1
@@ -739,29 +686,20 @@ SETTINGS do_not_merge_across_partitions_select_final = 1;
 └──────────┴─────────┴─────────────────────────┘
 ```
 
-The result is wrong, and there is no error.
-
-**Rule:** in a `ReplacingMergeTree`, every version of a row must land in the same partition. Partition by something that never changes for a key, such as `toYYYYMM(created_at)`, or don't partition at all.
+That's two rows for one order, with no error and no warning. If I had to pick one thing from this whole post to remember, it would be this: in a `ReplacingMergeTree`, every version of a row has to land in the same partition. Partition by something that never changes for a key, such as `toYYYYMM(created_at)`, or don't partition at all.
 
 ## Back to the coffee break
 
-The short answers are in the TL;DR at the top. Here is the longer version, as a checklist:
+The short answers are in the TL;DR at the top, so here are the few things I'd actually tell a colleague after all this.
 
-| Area | Rule |
-|---|---|
-| Ingestion | A non-empty INSERT normally creates at least one part per partition per insert block. The exceptions are async inserts, which combine INSERTs, and, in `Replicated` tables, retries that ClickHouse drops as duplicates. Batch on the client. |
-| Ingestion | Async inserts (on by default since 26.2) only help when many clients insert at the same time. |
-| Table design | Merges never cross partitions. Choose a partition key that never changes for a row, especially with `ReplacingMergeTree`. |
-| Querying | Duplicates are expected until merged. Use `FINAL` or `argMax`, and don't schedule `OPTIMIZE ... FINAL` to fix them. |
-| Querying | Merges save storage. Your queries have to be correct without them. |
-| Operations | Merges are lazy by design. The selector waits for about five parts of similar size, so a few small parts sitting around is normal. |
-| Operations | `system.parts` and `system.part_log` show everything described here. Look at them before tuning anything. |
+Batch your INSERTs on the client. Every non-empty INSERT normally creates at least one part per partition per insert block, and async inserts (on by default since 26.2) only help when many clients write at the same time; the exceptions are those async inserts and, in `Replicated` tables, retries that ClickHouse drops as duplicates.
+
+Don't panic about a few small parts sitting around. Merges are lazy on purpose, the selector likes to wait for about five parts of similar size, and `system.parts` and `system.part_log` will show you exactly what's going on before you start tuning anything.
+
+Pick a partition key that never changes for a row, especially with `ReplacingMergeTree`, because merges never cross partitions. And expect duplicates until merges catch up: read with `FINAL` or `argMax` instead of scheduling `OPTIMIZE ... FINAL` to clean them up. Merges save storage, but your queries have to be correct without them.
 
 ## Further reading
 
-- [Supercharging your large ClickHouse data loads](https://clickhouse.com/blog/supercharge-your-clickhouse-data-loads-part1) by Tom Schreiber: how insert block size and parallelism affect bulk loads.
-- [The too many parts problem](https://clickhouse.com/docs/tips-and-tricks/too-many-parts) in the official docs.
-- [`OPTIMIZE TABLE ... FINAL`: when to use it, when to avoid it](https://clickhouse.com/resources/engineering/clickhouse-optimize-table-final).
-- Source: [`MergeTreeDataWriter.cpp`](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Storages/MergeTree/MergeTreeDataWriter.cpp) (insert to part), [`SimpleMergeSelector.h`](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Storages/MergeTree/Compaction/MergeSelectors/SimpleMergeSelector.h) (which parts merge), [`MergeTreeSettings.cpp`](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Storages/MergeTree/MergeTreeSettings.cpp) (all the defaults).
+If you want to go further, Tom Schreiber's [Supercharging your large ClickHouse data loads](https://clickhouse.com/blog/supercharge-your-clickhouse-data-loads-part1) is the best thing I found on how insert block size and parallelism affect bulk loads. The official docs have a page on [the too many parts problem](https://clickhouse.com/docs/tips-and-tricks/too-many-parts), and there's a good piece on [when to use `OPTIMIZE TABLE ... FINAL` and when to avoid it](https://clickhouse.com/resources/engineering/clickhouse-optimize-table-final). In the source, [`MergeTreeDataWriter.cpp`](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Storages/MergeTree/MergeTreeDataWriter.cpp) is where an insert becomes a part, [`SimpleMergeSelector.h`](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Storages/MergeTree/Compaction/MergeSelectors/SimpleMergeSelector.h) decides which parts merge, and [`MergeTreeSettings.cpp`](https://github.com/ClickHouse/ClickHouse/blob/ca8dd5528a09eddfa1b0be2a987c0c8c77c7d5a7/src/Storages/MergeTree/MergeTreeSettings.cpp) has all the defaults.
 
 All the SQL from these experiments is in [one script](follow-one-row.sql) you can run against a fresh container.
