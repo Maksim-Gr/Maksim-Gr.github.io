@@ -161,7 +161,7 @@ The first thing that bit me is the obvious one: a key whose numeric values all s
 
 The second one I didn't expect at all. I assumed that a query which sums the rows itself is safe no matter what the merges do, and it mostly is, but not about which rows come back. Before the merge, the `GROUP BY` query above returned `/promo` with a total of 0; after the merge, the same query returns only `/home`. To keep the output the same either way, add `HAVING sum(views) != 0`, which hides zero totals before a merge too. (My first version of that query failed with `ILLEGAL_AGGREGATION`, because I'd named the result `views`, the same as the column, and ClickHouse then read `sum(views)` in `HAVING` as a sum of the sum. Hence `total`.)
 
-The third is the `title` column, which kept `'Home'` and threw away `'Home (new title)'`. Non-numeric columns outside the sorting key aren't summed, one value survives, and you don't get to choose which.
+The third is the `title` column, which kept `'Home'` and threw away `'Home (new title)'`. Non-numeric columns outside the sorting key aren't summed, and the merge keeps the value from the first row, which is the row from the part with the lowest block number. Insert the two rows in reverse order and `'Home (new title)'` wins instead. (Thanks to a reader in the comments for suggesting that test.) The docs call this value arbitrary, and with concurrent inserts "first" means first to commit, not first sent, so I wouldn't rely on it. If you care which title you get, store an `updated_at` timestamp with each row and query `argMax(title, updated_at)`: the newest title wins, however the parts were merged.
 
 ### AggregatingMergeTree: a plain column changes its value after a merge
 
