@@ -1,0 +1,2 @@
+{"order_id": 1, "customer": {"id": 7, "address": {"city": "Berlin"}}, "items": [{"sku": "A1", "qty": 2}], "tags": {"source": "app", "campaign": "fall"}, "created_at": "2026-10-20T10:00:00Z"}
+{"order_id": 2, "customer": {"id": 8, "address": {"city": "Paris"}}, "items": [{"sku": "B2", "qty": 1}, {"sku": "C3", "qty": 4}], "tags": {"source": "web"}, "created_at": "2026-10-20T10:05:00Z"}
