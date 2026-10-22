@@ -10,7 +10,7 @@ This post isn't about ClickHouse internals. It's about a part of my day-to-day w
 
 1. find a message on the topic and check its fields,
 2. write several migrations that have to be applied in a particular order (we use [golang-migrate](https://github.com/golang-migrate/migrate)),
-3. apply them and check that data shows up (not on prod, we have a separate environment for that. It's a joke, btw).
+3. apply them and check that data shows up (not on prod, we have a separate environment for that).
 
 For a flat message with a few fields that's fine. When the message has nested objects or arrays, it gets slow and easy to get wrong. At some point I noticed how much time I was spending on it and started looking for a faster way.
 
