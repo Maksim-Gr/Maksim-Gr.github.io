@@ -1,4 +1,4 @@
--- Companion script for "Why I am scared of complex nested JSON"
+-- Companion script for "Generating Kafka ClickHouse pipelines from a JSON sample"
 -- Runs the raw -> datalake part of the migration clickforge 0.7.0 generates for video_events.json,
 -- without Kafka: plain MergeTree instead of ReplicatedMergeTree, no ON CLUSTER, rows inserted into raw by hand.
 -- Tested on ClickHouse 26.9:

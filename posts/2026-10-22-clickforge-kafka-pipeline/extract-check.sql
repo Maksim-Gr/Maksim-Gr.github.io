@@ -1,4 +1,4 @@
--- Companion script for "Why I am scared of complex nested JSON"
+-- Companion script for "Generating Kafka ClickHouse pipelines from a JSON sample"
 -- Tested on ClickHouse 26.9:
 --   docker run -d --name ch --ulimit nofile=262144:262144 clickhouse/clickhouse-server:26.9
 --   docker exec -i ch clickhouse-client --multiquery < extract-check.sql

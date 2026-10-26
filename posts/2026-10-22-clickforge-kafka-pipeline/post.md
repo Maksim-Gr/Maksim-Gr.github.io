@@ -1,5 +1,5 @@
 ---
-title: "Why I am scared of complex nested JSON"
+title: "Generating Kafka ClickHouse pipelines from a JSON sample"
 date: 2026-10-22
 description: "How we load Kafka topics into ClickHouse through streams, raw and datalake tables, why writing those migrations by hand got old, the shell script that silently mixed up nested fields, and the CLI I built to replace it."
 tags: [clickhouse, kafka]
