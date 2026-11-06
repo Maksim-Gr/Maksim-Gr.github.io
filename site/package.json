@@ -4,10 +4,14 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "dev": "node build.mjs --drafts && python3 -m http.server 8000 -d _site"
+    "dev": "node build.mjs --drafts && python3 -m http.server 8000 -d _site",
+    "test": "node --test",
+    "check": "npm test && npm run build && node check-links.mjs"
   },
   "dependencies": {
     "highlight.js": "11.12.0",
-    "marked": "18.1.0"
+    "marked": "18.1.0",
+    "parse5": "8.1.0",
+    "yaml": "2.9.1"
   }
 }

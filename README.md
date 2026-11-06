@@ -36,8 +36,9 @@ cp topics/clickhouse/findings.md topics/<topic>/findings.md   # then keep only t
 
 ```bash
 cd site
-npm install                 # once
+npm ci                      # once
 node build.mjs --drafts     # build, including posts with `draft: true`
+npm run check               # tests, production build, and local link checks
 npm run dev                 # build with drafts + serve at http://localhost:8000
 node build.mjs              # production build (drafts left out)
 ```
@@ -57,6 +58,10 @@ draft: true                     # remove to publish
 ---
 ```
 
-Files next to `post.md` with extensions `.sql .sh .py .png .jpg .svg .gif .webp` are published with the post, so link them relatively, e.g. `[script](follow-one-row.sql)`.
+Files next to `post.md` with extensions `.sql .json .sh .py .yml .xml .png .jpg .jpeg .svg .gif .webp` are published with the post, including files in subfolders, so link them relatively, e.g. `[script](follow-one-row.sql)`.
 
-The build fails if a published post links to a post that isn't built (for example, Part 1 linking to a Part 2 that is still a draft). Publish a series part together with every part it links to.
+Links to draft posts appear as “coming soon” in production. Links to nonexistent posts fail the build. Metadata is validated for every post, including drafts: dates must be valid, tags must be a list, series parts must be positive integers and unique within their series, and post/topic URLs must not collide.
+
+## dev.to
+
+`node site/devto.mjs` writes a dev.to-ready copy of every published post to `devto/` (git-ignored): `published: false`, at most 4 tags, `canonical_url` pointing at this site, `series` kept, links made absolute, TODO comments removed. Paste a file into dev.to's editor, preview, then set `published: true`. Publish the parts in order: dev.to sorts a series by publish date.

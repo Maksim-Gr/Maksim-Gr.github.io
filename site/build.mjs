@@ -6,12 +6,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Marked } from 'marked';
 import hljs from 'highlight.js';
+import { readPosts, slugify, SITE_URL } from './posts.mjs';
 
 const SITE = {
   title: 'Maksim Grishchenko',
   description: 'Data engineering, databases and software: notes from my day-to-day work.',
-  url: 'https://maksim-gr.github.io',
-  repo: 'https://github.com/Maksim-Gr/Maksim-Gr.github.io',
+  url: SITE_URL,
   github: 'https://github.com/Maksim-Gr',
   email: 'maksim.g.grishchenko@gmail.com',
   telegram: 'MaxXGr',
@@ -24,7 +24,7 @@ const outDir = path.join(siteDir, '_site');
 const includeDrafts = process.argv.includes('--drafts');
 
 // Files next to post.md that are published with the post (scripts, images).
-const PUBLISHED_EXTENSIONS = new Set(['.sql', '.json', '.sh', '.py', '.yml', '.png', '.jpg', '.jpeg', '.svg', '.gif', '.webp']);
+const PUBLISHED_EXTENSIONS = new Set(['.sql', '.json', '.sh', '.py', '.yml', '.xml', '.png', '.jpg', '.jpeg', '.svg', '.gif', '.webp']);
 
 const escapeHtml = (s) => String(s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -33,34 +33,6 @@ const escapeHtml = (s) => String(s)
 const decodeEntities = (s) => s
   .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
   .replace(/&#39;/g, "'").replace(/&amp;/g, '&');
-
-const slugify = (s) => s.toLowerCase()
-  .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-
-function parseFrontMatter(src) {
-  if (!src.startsWith('---\n')) {
-    return { meta: {}, body: src };
-  }
-  const end = src.indexOf('\n---\n', 4);
-  if (end === -1) {
-    throw new Error('Unterminated front matter');
-  }
-  const meta = {};
-  for (const line of src.slice(4, end).split('\n')) {
-    const m = line.match(/^(\w+):\s*(.*)$/);
-    if (!m) continue;
-    let value = m[2].trim();
-    if (value.startsWith('[') && value.endsWith(']')) {
-      value = value.slice(1, -1).split(',').map((v) => v.trim()).filter(Boolean);
-    } else if (value === 'true' || value === 'false') {
-      value = value === 'true';
-    } else {
-      value = value.replace(/^["']|["']$/g, '');
-    }
-    meta[m[1]] = value;
-  }
-  return { meta, body: src.slice(end + 5) };
-}
 
 let usedIds = new Map();
 
@@ -95,9 +67,9 @@ function renderExcerpt(md, postUrl, maxBlocks = 3) {
     if (blocks.length === maxBlocks) break;
   }
   usedIds = new Map();
-  // Relative links (scripts next to the post) must point into the post's folder.
+  // Relative links, fragments and images must point into the post's folder.
   return marked.parser(blocks)
-    .replace(/href="(?!https?:|\/|#|mailto:)([^"]+)"/g, `href="${postUrl}$1"`);
+    .replace(/(href|src)="(?![a-z][a-z0-9+.-]*:|\/)([^"]+)"/gi, (_, attr, url) => `${attr}="${postUrl}${url}"`);
 }
 
 function renderMarkdown(md) {
@@ -189,21 +161,11 @@ function writeFile(rel, content) {
 // boxes can show them as "coming soon" instead of linking to a missing page.
 const posts = [];
 const unpublished = [];
-for (const dir of fs.readdirSync(postsDir).sort()) {
-  const mdFile = path.join(postsDir, dir, 'post.md');
-  if (!fs.existsSync(mdFile)) continue;
-  const { meta, body } = parseFrontMatter(fs.readFileSync(mdFile, 'utf8'));
+for (const { dir, slug, meta, body } of readPosts(postsDir)) {
   if (meta.draft && !includeDrafts) {
-    const slug = dir.replace(/^\d{4}-\d{2}-\d{2}-/, '');
-    unpublished.push({ url: `/posts/${slug}/`, title: meta.title, series: meta.series, part: meta.part ? Number(meta.part) : undefined });
+    unpublished.push({ url: `/posts/${slug}/`, title: meta.title, series: meta.series, part: meta.part });
     continue;
   }
-  for (const key of ['title', 'date', 'description']) {
-    if (!meta[key]) {
-      throw new Error(`${mdFile}: front matter is missing "${key}"`);
-    }
-  }
-  const slug = dir.replace(/^\d{4}-\d{2}-\d{2}-/, '');
   const html = renderMarkdown(body);
   const words = body.replace(/```[\s\S]*?```/g, '').split(/\s+/).length;
   posts.push({
@@ -214,10 +176,10 @@ for (const dir of fs.readdirSync(postsDir).sort()) {
     date: meta.date,
     description: meta.description,
     testedOn: meta.tested_on,
-    tags: Array.isArray(meta.tags) ? meta.tags : [],
+    tags: meta.tags,
     draft: Boolean(meta.draft),
     series: meta.series,
-    part: meta.part ? Number(meta.part) : undefined,
+    part: meta.part,
     minutes: Math.max(1, Math.round(words / 230)),
     html,
     excerpt: renderExcerpt(body, `/posts/${slug}/`),
@@ -305,9 +267,12 @@ ${seriesNext(p)}
       ...(p.series ? { isPartOf: { '@type': 'CreativeWorkSeries', name: p.series }, position: p.part } : {}),
     },
   }));
-  for (const f of fs.readdirSync(path.join(postsDir, p.dir))) {
+  // Scripts, configs and images next to the post, including subfolders (e.g. a lab's config files).
+  for (const f of fs.readdirSync(path.join(postsDir, p.dir), { recursive: true })) {
     if (PUBLISHED_EXTENSIONS.has(path.extname(f).toLowerCase())) {
-      fs.copyFileSync(path.join(postsDir, p.dir, f), path.join(outDir, 'posts', p.slug, f));
+      const target = path.join(outDir, 'posts', p.slug, f);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(path.join(postsDir, p.dir, f), target);
     }
   }
 }
